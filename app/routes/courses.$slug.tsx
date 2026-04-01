@@ -9,12 +9,19 @@ import {
 } from "~/services/courseService";
 import { isUserEnrolled } from "~/services/enrollmentService";
 import {
+  getCourseAverageRating,
+  getUserRatingForCourse,
+  upsertRating,
+} from "~/services/ratingService";
+import { StarRatingDisplay, StarRatingInput } from "~/components/star-rating";
+import {
   calculateProgress,
   getLessonProgressForCourse,
   getNextIncompleteLesson,
 } from "~/services/progressService";
 import { getCurrentUserId } from "~/lib/session";
-import { LessonProgressStatus } from "~/db/schema";
+import { LessonProgressStatus, UserRole } from "~/db/schema";
+import { getUserById } from "~/services/userService";
 import { Card, CardContent, CardHeader } from "~/components/ui/card";
 import { Button } from "~/components/ui/button";
 import { Skeleton } from "~/components/ui/skeleton";
@@ -102,6 +109,12 @@ export async function loader({ params, request }: Route.LoaderArgs) {
     : courseWithDetails.price;
   const tierInfo = getCountryTierInfo(country);
 
+  const ratingData = getCourseAverageRating(course.id);
+  const currentUser = currentUserId ? getUserById(currentUserId) : null;
+  const canRate = currentUser?.role === UserRole.Student;
+  const userRating =
+    canRate ? getUserRatingForCourse(currentUserId!, course.id) : null;
+
   return {
     course: courseWithDetails,
     salesCopyHtml,
@@ -113,10 +126,40 @@ export async function loader({ params, request }: Route.LoaderArgs) {
     currentUserId,
     pppPrice,
     tierInfo,
+    ratingAverage: ratingData.average,
+    ratingCount: ratingData.count,
+    userRating,
+    canRate,
   };
 }
 
-// No action — enrollment is handled via the purchase confirmation page
+export async function action({ request }: Route.ActionArgs) {
+  const currentUserId = await getCurrentUserId(request);
+  if (!currentUserId) {
+    throw data("Sign in required", { status: 401 });
+  }
+
+  const formData = await request.formData();
+  const intent = formData.get("intent");
+
+  if (intent === "rate") {
+    const currentUser = getUserById(currentUserId);
+    if (currentUser?.role !== UserRole.Student) {
+      throw data("Only students can rate courses", { status: 403 });
+    }
+
+    const courseId = Number(formData.get("courseId"));
+    const rating = Number(formData.get("rating"));
+
+    if (!courseId || rating < 1 || rating > 5) {
+      throw data("Invalid rating", { status: 400 });
+    }
+
+    upsertRating(currentUserId, courseId, rating);
+  }
+
+  return null;
+}
 
 export function HydrateFallback() {
   return (
@@ -181,6 +224,10 @@ export default function CourseDetail({ loaderData }: Route.ComponentProps) {
     currentUserId,
     pppPrice,
     tierInfo,
+    ratingAverage,
+    ratingCount,
+    userRating,
+    canRate,
   } = loaderData;
   const isInstructor = currentUserId === course.instructorId;
   const [searchParams, setSearchParams] = useSearchParams();
@@ -301,7 +348,7 @@ export default function CourseDetail({ loaderData }: Route.ComponentProps) {
         <p className="mb-4 text-lg text-muted-foreground">
           {course.description}
         </p>
-        <div className="flex items-center gap-4 text-sm text-muted-foreground">
+        <div className="flex flex-wrap items-center gap-4 text-sm text-muted-foreground">
           <span className="flex items-center gap-1.5">
             <UserAvatar
               name={course.instructorName}
@@ -320,6 +367,7 @@ export default function CourseDetail({ loaderData }: Route.ComponentProps) {
               {formatDuration(totalDuration, true, false, false)} total
             </span>
           )}
+          <StarRatingDisplay average={ratingAverage} count={ratingCount} />
         </div>
       </div>
 
@@ -413,6 +461,17 @@ export default function CourseDetail({ loaderData }: Route.ComponentProps) {
                       Buy More Seats
                     </Button>
                   </Link>
+                  {canRate && (
+                    <div className="pt-2">
+                      <p className="mb-1.5 text-xs font-medium text-muted-foreground">
+                        Rate this course
+                      </p>
+                      <StarRatingInput
+                        courseId={course.id}
+                        userRating={userRating}
+                      />
+                    </div>
+                  )}
                 </>
               ) : (
                 enrollButton
