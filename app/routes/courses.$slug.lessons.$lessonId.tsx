@@ -26,7 +26,18 @@ import {
   getBestAttempt,
 } from "~/services/quizService";
 import { computeResult } from "~/services/quizScoringService";
-import { LessonProgressStatus } from "~/db/schema";
+import { getUserById } from "~/services/userService";
+import {
+  getCommentsForLesson,
+  getCommentById,
+  createComment,
+  createReply,
+  editComment,
+  softDeleteComment,
+  restoreComment,
+} from "~/services/lessonCommentService";
+import { LessonProgressStatus, UserRole } from "~/db/schema";
+import { LessonComments } from "~/components/lesson-comments";
 import { Button } from "~/components/ui/button";
 import { Card, CardContent } from "~/components/ui/card";
 import {
@@ -248,6 +259,33 @@ export async function loader({ params, request }: Route.LoaderArgs) {
     }
   }
 
+  // ─── Comments ───
+  const currentUser = currentUserId ? getUserById(currentUserId) : null;
+  const isStaff =
+    currentUser?.role === UserRole.Instructor ||
+    currentUser?.role === UserRole.Admin;
+  const canViewComments = enrolled || isStaff;
+
+  const COMMENTS_PER_PAGE = 10;
+  const url = new URL(request.url);
+  const commentsPage = Math.max(
+    1,
+    Number(url.searchParams.get("page") ?? "1")
+  );
+
+  let comments: Awaited<ReturnType<typeof renderCommentsHtml>> = [];
+  let commentsTotal = 0;
+
+  if (canViewComments) {
+    const { comments: rawComments, total } = getCommentsForLesson(
+      lessonId,
+      (commentsPage - 1) * COMMENTS_PER_PAGE,
+      COMMENTS_PER_PAGE
+    );
+    commentsTotal = total;
+    comments = await renderCommentsHtml(rawComments, isStaff);
+  }
+
   return {
     course: {
       id: courseWithDetails.id,
@@ -271,6 +309,9 @@ export async function loader({ params, request }: Route.LoaderArgs) {
     lessonStatus,
     enrolled,
     currentUserId,
+    currentUser: currentUser
+      ? { id: currentUser.id, role: currentUser.role }
+      : null,
     prevLesson,
     nextLesson,
     quiz,
@@ -281,7 +322,35 @@ export async function loader({ params, request }: Route.LoaderArgs) {
     pppBlocked,
     pppBlockedCountry,
     pppPurchaseCountry,
+    comments,
+    commentsTotal,
+    commentsPage,
+    canViewComments,
   };
+}
+
+type CommentWithHtml = Awaited<ReturnType<typeof renderCommentsHtml>>[number];
+
+async function renderCommentsHtml(
+  comments: import("~/services/lessonCommentService").ThreadedComment[],
+  isStaff: boolean
+) {
+  const visible = isStaff ? comments : comments.filter((c) => !c.deletedAt);
+  return Promise.all(
+    visible.map(async (c) => ({
+      ...c,
+      bodyHtml: c.deletedAt ? null : await renderMarkdown(c.body),
+      replies: await Promise.all(
+        // Staff see deleted replies with placeholder; students skip them entirely
+        (isStaff ? c.replies : c.replies.filter((r) => !r.deletedAt)).map(
+          async (r) => ({
+            ...r,
+            bodyHtml: r.deletedAt ? null : await renderMarkdown(r.body),
+          })
+        )
+      ),
+    }))
+  );
 }
 
 export async function action({ params, request }: Route.ActionArgs) {
@@ -331,6 +400,87 @@ export async function action({ params, request }: Route.ActionArgs) {
     return { quizResult: result };
   }
 
+  // ─── Comment intents ───
+  if (
+    intent === "create-comment" ||
+    intent === "create-reply" ||
+    intent === "edit-comment" ||
+    intent === "delete-comment" ||
+    intent === "restore-comment"
+  ) {
+    const user = getUserById(currentUserId);
+    if (!user) throw data("User not found", { status: 404 });
+
+    const isStaff =
+      user.role === UserRole.Instructor || user.role === UserRole.Admin;
+    const canPost = isUserEnrolled(currentUserId, course.id) || isStaff;
+
+    if (intent === "create-comment") {
+      if (!canPost) throw data("Must be enrolled to comment", { status: 403 });
+      const body = String(formData.get("body") ?? "").trim();
+      if (!body || body.length > 2000)
+        return data({ error: "Comment must be 1–2000 characters" }, { status: 400 });
+      const comment = createComment(lessonId, currentUserId, body);
+      return { comment };
+    }
+
+    if (intent === "create-reply") {
+      if (!canPost) throw data("Must be enrolled to reply", { status: 403 });
+      const parentId = Number(formData.get("parentId"));
+      const body = String(formData.get("body") ?? "").trim();
+      if (isNaN(parentId)) throw data("Invalid parent comment", { status: 400 });
+      if (!body || body.length > 2000)
+        return data({ error: "Reply must be 1–2000 characters" }, { status: 400 });
+      const parent = getCommentById(parentId);
+      if (!parent || parent.lessonId !== lessonId || parent.parentId !== null) {
+        throw data("Invalid parent comment", { status: 400 });
+      }
+      const reply = createReply(lessonId, currentUserId, parentId, body);
+      return { reply };
+    }
+
+    if (intent === "edit-comment") {
+      const commentId = Number(formData.get("commentId"));
+      const body = String(formData.get("body") ?? "").trim();
+      if (isNaN(commentId)) throw data("Invalid comment ID", { status: 400 });
+      if (!body || body.length > 2000)
+        return data({ error: "Comment must be 1–2000 characters" }, { status: 400 });
+      const comment = getCommentById(commentId);
+      if (!comment || comment.lessonId !== lessonId)
+        throw data("Comment not found", { status: 404 });
+      if (comment.userId !== currentUserId)
+        throw data("Not authorized to edit this comment", { status: 403 });
+      if (comment.deletedAt)
+        throw data("Cannot edit a deleted comment", { status: 400 });
+      const updated = editComment(commentId, body);
+      return { comment: updated };
+    }
+
+    if (intent === "delete-comment") {
+      const commentId = Number(formData.get("commentId"));
+      if (isNaN(commentId)) throw data("Invalid comment ID", { status: 400 });
+      const comment = getCommentById(commentId);
+      if (!comment || comment.lessonId !== lessonId)
+        throw data("Comment not found", { status: 404 });
+      if (comment.userId !== currentUserId && !isStaff)
+        throw data("Not authorized to delete this comment", { status: 403 });
+      softDeleteComment(commentId);
+      return { success: true };
+    }
+
+    if (intent === "restore-comment") {
+      const commentId = Number(formData.get("commentId"));
+      if (isNaN(commentId)) throw data("Invalid comment ID", { status: 400 });
+      if (!isStaff)
+        throw data("Only instructors and admins can restore comments", { status: 403 });
+      const comment = getCommentById(commentId);
+      if (!comment || comment.lessonId !== lessonId)
+        throw data("Comment not found", { status: 404 });
+      restoreComment(commentId);
+      return { success: true };
+    }
+  }
+
   throw data("Invalid action", { status: 400 });
 }
 
@@ -372,6 +522,7 @@ export default function LessonViewer({ loaderData }: Route.ComponentProps) {
     lessonStatus,
     enrolled,
     currentUserId,
+    currentUser,
     prevLesson,
     nextLesson,
     quiz,
@@ -382,7 +533,16 @@ export default function LessonViewer({ loaderData }: Route.ComponentProps) {
     pppBlocked,
     pppBlockedCountry,
     pppPurchaseCountry,
+    comments,
+    commentsTotal,
+    commentsPage,
+    canViewComments,
   } = loaderData;
+
+  const isStaff =
+    currentUser?.role === UserRole.Instructor ||
+    currentUser?.role === UserRole.Admin;
+  const canPost = enrolled || !!isStaff;
   const [autoplay, toggleAutoplay] = useAutoplay();
   const fetcher = useFetcher({ key: `mark-complete-${lesson.id}` });
   const quizFetcher = useFetcher({ key: `quiz-${lesson.id}` });
@@ -637,6 +797,24 @@ export default function LessonViewer({ loaderData }: Route.ComponentProps) {
                 </div>
                 <ChevronRight className="size-4" />
               </Link>
+            )}
+          </div>
+
+          {/* Comments */}
+          <div className="mt-10 border-t pt-8">
+            {canViewComments ? (
+              <LessonComments
+                lessonId={lesson.id}
+                comments={comments}
+                commentsTotal={commentsTotal}
+                commentsPage={commentsPage}
+                currentUser={currentUser}
+                canPost={canPost}
+              />
+            ) : (
+              <p className="text-sm text-muted-foreground">
+                Enrol in this course to join the discussion.
+              </p>
             )}
           </div>
         </div>
