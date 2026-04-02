@@ -9,6 +9,9 @@ import {
   getCourseCompletionRate,
   getCourseEnrollmentSplit,
   getEnrollmentTrend,
+  getCourseQuizMetrics,
+  getLessonDropoffFunnel,
+  getCourseVideoDropoff,
   type Period,
 } from "~/services/analyticsService";
 import { data, isRouteErrorResponse } from "react-router";
@@ -19,6 +22,18 @@ import { AlertTriangle } from "lucide-react";
 const EnrollmentTrendChart = lazy(() =>
   import("~/components/enrollment-trend-chart").then((m) => ({
     default: m.EnrollmentTrendChart,
+  }))
+);
+
+const QuizPassRateChart = lazy(() =>
+  import("~/components/quiz-pass-rate-chart").then((m) => ({
+    default: m.QuizPassRateChart,
+  }))
+);
+
+const LessonFunnelChart = lazy(() =>
+  import("~/components/lesson-funnel-chart").then((m) => ({
+    default: m.LessonFunnelChart,
   }))
 );
 
@@ -83,8 +98,21 @@ export async function loader({ params, request }: Route.LoaderArgs) {
   const enrollmentSplit = getCourseEnrollmentSplit(courseId);
   const completionRate = getCourseCompletionRate(courseId);
   const enrollmentTrend = getEnrollmentTrend(courseId, period);
+  const quizMetrics = getCourseQuizMetrics(courseId);
+  const lessonFunnel = getLessonDropoffFunnel(courseId);
+  const videoDropoff = getCourseVideoDropoff(courseId);
 
-  return { course, period, revenue, enrollmentSplit, completionRate, enrollmentTrend };
+  return {
+    course,
+    period,
+    revenue,
+    enrollmentSplit,
+    completionRate,
+    enrollmentTrend,
+    quizMetrics,
+    lessonFunnel,
+    videoDropoff,
+  };
 }
 
 function formatRevenue(cents: number) {
@@ -96,8 +124,17 @@ function formatPercent(rate: number) {
 }
 
 export default function CourseAnalytics({ loaderData }: Route.ComponentProps) {
-  const { course, period, revenue, enrollmentSplit, completionRate, enrollmentTrend } =
-    loaderData;
+  const {
+    course,
+    period,
+    revenue,
+    enrollmentSplit,
+    completionRate,
+    enrollmentTrend,
+    quizMetrics,
+    lessonFunnel,
+    videoDropoff,
+  } = loaderData;
   const navigate = useNavigate();
 
   function handlePeriodChange(newPeriod: Period) {
@@ -192,7 +229,7 @@ export default function CourseAnalytics({ loaderData }: Route.ComponentProps) {
       </div>
 
       {/* Enrollment trend chart */}
-      <Card>
+      <Card className="mb-8">
         <CardHeader>
           <CardTitle>Enrollment Trend</CardTitle>
         </CardHeader>
@@ -208,6 +245,83 @@ export default function CourseAnalytics({ loaderData }: Route.ComponentProps) {
           )}
         </CardContent>
       </Card>
+
+      {/* Quiz analytics */}
+      {quizMetrics.length > 0 && (
+        <Card className="mb-8">
+          <CardHeader>
+            <CardTitle>Quiz Performance</CardTitle>
+          </CardHeader>
+          <CardContent>
+            <Suspense fallback={<div className="h-[300px]" />}>
+              <QuizPassRateChart data={quizMetrics} />
+            </Suspense>
+            <div className="mt-6 overflow-x-auto">
+              <table className="w-full text-sm">
+                <thead>
+                  <tr className="border-b text-left text-muted-foreground">
+                    <th className="pb-2 pr-4 font-medium">Quiz</th>
+                    <th className="pb-2 pr-4 font-medium">Best pass rate</th>
+                    <th className="pb-2 pr-4 font-medium">Latest pass rate</th>
+                    <th className="pb-2 pr-4 font-medium">Avg score</th>
+                    <th className="pb-2 pr-4 font-medium">Total attempts</th>
+                    <th className="pb-2 font-medium">Avg attempts/student</th>
+                  </tr>
+                </thead>
+                <tbody>
+                  {quizMetrics.map((q) => (
+                    <tr key={q.quizId} className="border-b last:border-0">
+                      <td className="py-2 pr-4">{q.quizTitle}</td>
+                      <td className="py-2 pr-4">{formatPercent(q.bestAttemptPassRate)}</td>
+                      <td className="py-2 pr-4">{formatPercent(q.latestAttemptPassRate)}</td>
+                      <td className="py-2 pr-4">{formatPercent(q.avgScore)}</td>
+                      <td className="py-2 pr-4">{q.totalAttempts}</td>
+                      <td className="py-2">{q.avgAttemptsPerStudent.toFixed(1)}</td>
+                    </tr>
+                  ))}
+                </tbody>
+              </table>
+            </div>
+          </CardContent>
+        </Card>
+      )}
+
+      {/* Lesson drop-off funnel */}
+      {lessonFunnel.length > 0 && (
+        <Card className="mb-8">
+          <CardHeader>
+            <CardTitle>Lesson Completion Funnel</CardTitle>
+          </CardHeader>
+          <CardContent>
+            <Suspense fallback={<div className="h-[300px]" />}>
+              <LessonFunnelChart data={lessonFunnel} />
+            </Suspense>
+
+            {/* Video drop-off inline per lesson */}
+            {videoDropoff.length > 0 && (
+              <div className="mt-6 space-y-3">
+                <h3 className="text-sm font-medium text-muted-foreground">
+                  Average video watch depth
+                </h3>
+                {videoDropoff.map((v) => (
+                  <div key={v.lessonId} className="flex items-center gap-3">
+                    <span className="w-48 truncate text-sm">{v.lessonTitle}</span>
+                    <div className="flex-1 rounded-full bg-muted h-2 overflow-hidden">
+                      <div
+                        className="h-full bg-indigo-500 rounded-full"
+                        style={{ width: `${Math.round(v.avgWatchDepth * 100)}%` }}
+                      />
+                    </div>
+                    <span className="w-10 text-right text-sm text-muted-foreground">
+                      {Math.round(v.avgWatchDepth * 100)}%
+                    </span>
+                  </div>
+                ))}
+              </div>
+            )}
+          </CardContent>
+        </Card>
+      )}
     </div>
   );
 }

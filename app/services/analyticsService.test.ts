@@ -19,6 +19,9 @@ import {
   getCourseSummaries,
   getCourseEnrollmentSplit,
   getEnrollmentTrend,
+  getCourseQuizMetrics,
+  getLessonDropoffFunnel,
+  getCourseVideoDropoff,
 } from "./analyticsService";
 
 describe("analyticsService", () => {
@@ -330,6 +333,348 @@ describe("analyticsService", () => {
 
     it("returns an empty array when there are no enrollments", () => {
       expect(getEnrollmentTrend(base.course.id, "all")).toEqual([]);
+    });
+  });
+
+  // ─── Phase 3: Quiz metrics ───
+
+  function seedModuleAndLesson(courseId: number) {
+    const mod = testDb
+      .insert(schema.modules)
+      .values({ courseId, title: "Module 1", position: 1 })
+      .returning()
+      .get();
+
+    const lesson = testDb
+      .insert(schema.lessons)
+      .values({ moduleId: mod.id, title: "Lesson 1", position: 1 })
+      .returning()
+      .get();
+
+    return { mod, lesson };
+  }
+
+  function seedQuiz(lessonId: number, title = "Quiz 1") {
+    return testDb
+      .insert(schema.quizzes)
+      .values({ lessonId, title, passingScore: 0.7 })
+      .returning()
+      .get();
+  }
+
+  describe("getCourseQuizMetrics", () => {
+    it("returns empty array when course has no quizzes", () => {
+      expect(getCourseQuizMetrics(base.course.id)).toEqual([]);
+    });
+
+    it("returns zero metrics for a quiz with no attempts", () => {
+      const { lesson } = seedModuleAndLesson(base.course.id);
+      const quiz = seedQuiz(lesson.id);
+
+      const metrics = getCourseQuizMetrics(base.course.id);
+      expect(metrics).toHaveLength(1);
+      expect(metrics[0].quizId).toBe(quiz.id);
+      expect(metrics[0].totalAttempts).toBe(0);
+      expect(metrics[0].bestAttemptPassRate).toBe(0);
+      expect(metrics[0].latestAttemptPassRate).toBe(0);
+      expect(metrics[0].avgScore).toBe(0);
+    });
+
+    it("calculates best-attempt pass rate correctly", () => {
+      const { lesson } = seedModuleAndLesson(base.course.id);
+      const quiz = seedQuiz(lesson.id);
+
+      const user2 = testDb
+        .insert(schema.users)
+        .values({ name: "User 2", email: "u2@example.com", role: schema.UserRole.Student })
+        .returning()
+        .get();
+
+      // user1: first attempt 0.5 (fail), second attempt 0.8 (pass) → best = pass
+      testDb.insert(schema.quizAttempts).values([
+        { userId: base.user.id, quizId: quiz.id, score: 0.5, passed: false, attemptedAt: "2024-01-01T00:00:00.000Z" },
+        { userId: base.user.id, quizId: quiz.id, score: 0.8, passed: true, attemptedAt: "2024-01-02T00:00:00.000Z" },
+      ]).run();
+
+      // user2: single attempt 0.4 (fail) → best = fail
+      testDb.insert(schema.quizAttempts).values({
+        userId: user2.id, quizId: quiz.id, score: 0.4, passed: false, attemptedAt: "2024-01-01T00:00:00.000Z",
+      }).run();
+
+      const [m] = getCourseQuizMetrics(base.course.id);
+      expect(m.totalAttempts).toBe(3);
+      expect(m.bestAttemptPassRate).toBe(0.5); // 1 of 2 students passed on best attempt
+      expect(m.latestAttemptPassRate).toBe(0.5); // latest for user1 = 0.8 (pass), user2 = 0.4 (fail)
+    });
+
+    it("latest-attempt pass rate uses the most recent attempt by timestamp", () => {
+      const { lesson } = seedModuleAndLesson(base.course.id);
+      const quiz = seedQuiz(lesson.id);
+
+      // user: first attempt passes, latest attempt fails
+      testDb.insert(schema.quizAttempts).values([
+        { userId: base.user.id, quizId: quiz.id, score: 0.9, passed: true, attemptedAt: "2024-01-01T00:00:00.000Z" },
+        { userId: base.user.id, quizId: quiz.id, score: 0.3, passed: false, attemptedAt: "2024-01-03T00:00:00.000Z" },
+      ]).run();
+
+      const [m] = getCourseQuizMetrics(base.course.id);
+      expect(m.bestAttemptPassRate).toBe(1); // best = 0.9, passes
+      expect(m.latestAttemptPassRate).toBe(0); // latest = 0.3, fails
+    });
+
+    it("does not include quizzes from another course", () => {
+      const otherInstructor = testDb
+        .insert(schema.users)
+        .values({ name: "Other", email: "other2@example.com", role: schema.UserRole.Instructor })
+        .returning()
+        .get();
+
+      const otherCourse = testDb
+        .insert(schema.courses)
+        .values({
+          title: "Other Course",
+          slug: "other-course-q",
+          description: "x",
+          instructorId: otherInstructor.id,
+          categoryId: base.category.id,
+          status: schema.CourseStatus.Published,
+        })
+        .returning()
+        .get();
+
+      const { lesson: otherLesson } = seedModuleAndLesson(otherCourse.id);
+      seedQuiz(otherLesson.id, "Other Quiz");
+
+      expect(getCourseQuizMetrics(base.course.id)).toEqual([]);
+    });
+
+    it("calculates average score across all attempts", () => {
+      const { lesson } = seedModuleAndLesson(base.course.id);
+      const quiz = seedQuiz(lesson.id);
+
+      testDb.insert(schema.quizAttempts).values([
+        { userId: base.user.id, quizId: quiz.id, score: 0.4, passed: false },
+        { userId: base.user.id, quizId: quiz.id, score: 0.6, passed: false },
+      ]).run();
+
+      const [m] = getCourseQuizMetrics(base.course.id);
+      expect(m.avgScore).toBeCloseTo(0.5);
+    });
+
+    it("calculates average attempts per student", () => {
+      const { lesson } = seedModuleAndLesson(base.course.id);
+      const quiz = seedQuiz(lesson.id);
+
+      const user2 = testDb
+        .insert(schema.users)
+        .values({ name: "User 2", email: "u2b@example.com", role: schema.UserRole.Student })
+        .returning()
+        .get();
+
+      // user1: 3 attempts, user2: 1 attempt → avg = 2
+      testDb.insert(schema.quizAttempts).values([
+        { userId: base.user.id, quizId: quiz.id, score: 0.5, passed: false, attemptedAt: "2024-01-01T00:00:00.000Z" },
+        { userId: base.user.id, quizId: quiz.id, score: 0.5, passed: false, attemptedAt: "2024-01-02T00:00:00.000Z" },
+        { userId: base.user.id, quizId: quiz.id, score: 0.8, passed: true, attemptedAt: "2024-01-03T00:00:00.000Z" },
+        { userId: user2.id, quizId: quiz.id, score: 0.8, passed: true, attemptedAt: "2024-01-01T00:00:00.000Z" },
+      ]).run();
+
+      const [m] = getCourseQuizMetrics(base.course.id);
+      expect(m.avgAttemptsPerStudent).toBe(2);
+    });
+  });
+
+  // ─── Phase 3: Lesson drop-off funnel ───
+
+  describe("getLessonDropoffFunnel", () => {
+    it("returns lessons in module/lesson position order", () => {
+      const mod = testDb
+        .insert(schema.modules)
+        .values({ courseId: base.course.id, title: "Module 1", position: 1 })
+        .returning()
+        .get();
+
+      testDb.insert(schema.lessons).values([
+        { moduleId: mod.id, title: "Lesson B", position: 2 },
+        { moduleId: mod.id, title: "Lesson A", position: 1 },
+      ]).run();
+
+      const funnel = getLessonDropoffFunnel(base.course.id);
+      expect(funnel).toHaveLength(2);
+      expect(funnel[0].lessonTitle).toBe("Lesson A");
+      expect(funnel[1].lessonTitle).toBe("Lesson B");
+    });
+
+    it("counts only in_progress and completed statuses", () => {
+      const mod = testDb
+        .insert(schema.modules)
+        .values({ courseId: base.course.id, title: "Module 1", position: 1 })
+        .returning()
+        .get();
+
+      const lesson = testDb
+        .insert(schema.lessons)
+        .values({ moduleId: mod.id, title: "Lesson 1", position: 1 })
+        .returning()
+        .get();
+
+      const user2 = testDb
+        .insert(schema.users)
+        .values({ name: "User 2", email: "u2c@example.com", role: schema.UserRole.Student })
+        .returning()
+        .get();
+
+      const user3 = testDb
+        .insert(schema.users)
+        .values({ name: "User 3", email: "u3@example.com", role: schema.UserRole.Student })
+        .returning()
+        .get();
+
+      testDb.insert(schema.lessonProgress).values([
+        { userId: base.user.id, lessonId: lesson.id, status: schema.LessonProgressStatus.Completed },
+        { userId: user2.id, lessonId: lesson.id, status: schema.LessonProgressStatus.InProgress },
+        { userId: user3.id, lessonId: lesson.id, status: schema.LessonProgressStatus.NotStarted },
+      ]).run();
+
+      const [entry] = getLessonDropoffFunnel(base.course.id);
+      expect(entry.studentCount).toBe(2); // completed + in_progress, not not_started
+    });
+
+    it("returns zero for a lesson with no progress records", () => {
+      const mod = testDb
+        .insert(schema.modules)
+        .values({ courseId: base.course.id, title: "Module 1", position: 1 })
+        .returning()
+        .get();
+
+      testDb
+        .insert(schema.lessons)
+        .values({ moduleId: mod.id, title: "Empty Lesson", position: 1 })
+        .run();
+
+      const [entry] = getLessonDropoffFunnel(base.course.id);
+      expect(entry.studentCount).toBe(0);
+    });
+
+    it("does not include lessons from another course", () => {
+      const otherInstructor = testDb
+        .insert(schema.users)
+        .values({ name: "Other", email: "other3@example.com", role: schema.UserRole.Instructor })
+        .returning()
+        .get();
+
+      const otherCourse = testDb
+        .insert(schema.courses)
+        .values({
+          title: "Other Course",
+          slug: "other-course-f",
+          description: "x",
+          instructorId: otherInstructor.id,
+          categoryId: base.category.id,
+          status: schema.CourseStatus.Published,
+        })
+        .returning()
+        .get();
+
+      const otherMod = testDb
+        .insert(schema.modules)
+        .values({ courseId: otherCourse.id, title: "Other Module", position: 1 })
+        .returning()
+        .get();
+
+      testDb.insert(schema.lessons).values({ moduleId: otherMod.id, title: "Other Lesson", position: 1 }).run();
+
+      expect(getLessonDropoffFunnel(base.course.id)).toEqual([]);
+    });
+  });
+
+  // ─── Phase 3: Video drop-off ───
+
+  describe("getCourseVideoDropoff", () => {
+    it("returns empty array when no lessons have video + duration", () => {
+      const mod = testDb
+        .insert(schema.modules)
+        .values({ courseId: base.course.id, title: "Module 1", position: 1 })
+        .returning()
+        .get();
+
+      // lesson without videoUrl or durationMinutes
+      testDb.insert(schema.lessons).values({ moduleId: mod.id, title: "Text Lesson", position: 1 }).run();
+
+      expect(getCourseVideoDropoff(base.course.id)).toEqual([]);
+    });
+
+    it("excludes lessons with no videoWatchEvents", () => {
+      const mod = testDb
+        .insert(schema.modules)
+        .values({ courseId: base.course.id, title: "Module 1", position: 1 })
+        .returning()
+        .get();
+
+      testDb.insert(schema.lessons).values({
+        moduleId: mod.id,
+        title: "Video Lesson",
+        position: 1,
+        videoUrl: "https://example.com/video.mp4",
+        durationMinutes: 10,
+      }).run();
+
+      expect(getCourseVideoDropoff(base.course.id)).toEqual([]);
+    });
+
+    it("calculates average watch depth correctly", () => {
+      const mod = testDb
+        .insert(schema.modules)
+        .values({ courseId: base.course.id, title: "Module 1", position: 1 })
+        .returning()
+        .get();
+
+      const lesson = testDb
+        .insert(schema.lessons)
+        .values({
+          moduleId: mod.id,
+          title: "Video Lesson",
+          position: 1,
+          videoUrl: "https://example.com/video.mp4",
+          durationMinutes: 10, // 600 seconds
+        })
+        .returning()
+        .get();
+
+      const user2 = testDb
+        .insert(schema.users)
+        .values({ name: "User 2", email: "u2d@example.com", role: schema.UserRole.Student })
+        .returning()
+        .get();
+
+      // user1 max = 300s (50%), user2 max = 600s (100%) → avg = 75%
+      testDb.insert(schema.videoWatchEvents).values([
+        { userId: base.user.id, lessonId: lesson.id, eventType: "pause", positionSeconds: 300 },
+        { userId: base.user.id, lessonId: lesson.id, eventType: "pause", positionSeconds: 100 },
+        { userId: user2.id, lessonId: lesson.id, eventType: "pause", positionSeconds: 600 },
+      ]).run();
+
+      const [entry] = getCourseVideoDropoff(base.course.id);
+      expect(entry.lessonId).toBe(lesson.id);
+      expect(entry.avgWatchDepth).toBeCloseTo(0.75);
+    });
+
+    it("excludes lessons with null durationMinutes", () => {
+      const mod = testDb
+        .insert(schema.modules)
+        .values({ courseId: base.course.id, title: "Module 1", position: 1 })
+        .returning()
+        .get();
+
+      testDb.insert(schema.lessons).values({
+        moduleId: mod.id,
+        title: "Video No Duration",
+        position: 1,
+        videoUrl: "https://example.com/video.mp4",
+        // durationMinutes intentionally omitted (null)
+      }).run();
+
+      expect(getCourseVideoDropoff(base.course.id)).toEqual([]);
     });
   });
 });
