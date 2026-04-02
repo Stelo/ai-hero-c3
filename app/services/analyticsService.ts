@@ -297,6 +297,77 @@ export function getCourseVideoDropoff(courseId: number): VideoDropoffEntry[] {
     .filter((entry): entry is VideoDropoffEntry => entry !== null);
 }
 
+// ─── Anomaly detection ───
+// Pure functions — no database access. Take already-computed analytics data
+// and return lists of anomalies for display as callouts in the UI.
+
+export interface DropoffAnomaly {
+  type: "dropoff";
+  lessonId: number;
+  lessonTitle: string;
+  continuationRate: number; // fraction of prior lesson's students who reached this lesson
+}
+
+export interface QuizAnomaly {
+  type: "quiz";
+  quizId: number;
+  quizTitle: string;
+  bestAttemptPassRate: number;
+}
+
+export interface CompletionAnomaly {
+  type: "completion";
+  completionRate: number;
+}
+
+export type Anomaly = DropoffAnomaly | QuizAnomaly | CompletionAnomaly;
+
+const DROPOFF_THRESHOLD = 0.6; // fewer than 60% continuation flags a drop-off anomaly
+const QUIZ_PASS_THRESHOLD = 0.5; // best-attempt pass rate below 50% flags a quiz anomaly
+const COMPLETION_THRESHOLD = 0.3; // course completion rate below 30% flags a completion anomaly
+
+export function detectDropoffAnomalies(funnel: LessonFunnelEntry[]): DropoffAnomaly[] {
+  const anomalies: DropoffAnomaly[] = [];
+
+  for (let i = 1; i < funnel.length; i++) {
+    const prev = funnel[i - 1];
+    const curr = funnel[i];
+
+    // Skip if previous lesson had no students (avoid divide-by-zero; nothing to compare)
+    if (prev.studentCount === 0) continue;
+
+    const continuationRate = curr.studentCount / prev.studentCount;
+    if (continuationRate < DROPOFF_THRESHOLD) {
+      anomalies.push({
+        type: "dropoff",
+        lessonId: curr.lessonId,
+        lessonTitle: curr.lessonTitle,
+        continuationRate,
+      });
+    }
+  }
+
+  return anomalies;
+}
+
+export function detectQuizAnomalies(quizMetrics: QuizMetrics[]): QuizAnomaly[] {
+  return quizMetrics
+    .filter((q) => q.bestAttemptPassRate < QUIZ_PASS_THRESHOLD)
+    .map((q) => ({
+      type: "quiz" as const,
+      quizId: q.quizId,
+      quizTitle: q.quizTitle,
+      bestAttemptPassRate: q.bestAttemptPassRate,
+    }));
+}
+
+export function detectCompletionAnomaly(completionRate: number): CompletionAnomaly | null {
+  if (completionRate < COMPLETION_THRESHOLD) {
+    return { type: "completion", completionRate };
+  }
+  return null;
+}
+
 export function getCourseSummaries(instructorId: number | null) {
   const courseList =
     instructorId !== null

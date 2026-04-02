@@ -22,6 +22,11 @@ import {
   getCourseQuizMetrics,
   getLessonDropoffFunnel,
   getCourseVideoDropoff,
+  detectDropoffAnomalies,
+  detectQuizAnomalies,
+  detectCompletionAnomaly,
+  type LessonFunnelEntry,
+  type QuizMetrics,
 } from "./analyticsService";
 
 describe("analyticsService", () => {
@@ -675,6 +680,146 @@ describe("analyticsService", () => {
       }).run();
 
       expect(getCourseVideoDropoff(base.course.id)).toEqual([]);
+    });
+  });
+
+  // ─── Phase 4: Anomaly detection ───
+
+  function makeFunnelEntry(
+    overrides: Partial<LessonFunnelEntry> & Pick<LessonFunnelEntry, "lessonId" | "studentCount">
+  ): LessonFunnelEntry {
+    return {
+      lessonTitle: `Lesson ${overrides.lessonId}`,
+      modulePosition: 1,
+      lessonPosition: overrides.lessonId,
+      ...overrides,
+    };
+  }
+
+  function makeQuizMetrics(
+    overrides: Partial<QuizMetrics> & Pick<QuizMetrics, "quizId" | "bestAttemptPassRate">
+  ): QuizMetrics {
+    return {
+      quizTitle: `Quiz ${overrides.quizId}`,
+      totalAttempts: 10,
+      avgAttemptsPerStudent: 1,
+      avgScore: 0.5,
+      latestAttemptPassRate: 0.5,
+      ...overrides,
+    };
+  }
+
+  describe("detectDropoffAnomalies", () => {
+    it("returns empty array for a single-lesson funnel", () => {
+      const funnel = [makeFunnelEntry({ lessonId: 1, studentCount: 100 })];
+      expect(detectDropoffAnomalies(funnel)).toEqual([]);
+    });
+
+    it("returns empty array when all metrics are within threshold", () => {
+      const funnel = [
+        makeFunnelEntry({ lessonId: 1, studentCount: 100 }),
+        makeFunnelEntry({ lessonId: 2, studentCount: 60 }), // exactly 60% — no anomaly
+        makeFunnelEntry({ lessonId: 3, studentCount: 60 }), // 100% — no anomaly
+      ];
+      expect(detectDropoffAnomalies(funnel)).toEqual([]);
+    });
+
+    it("flags a lesson at exactly 59% continuation", () => {
+      const funnel = [
+        makeFunnelEntry({ lessonId: 1, studentCount: 100 }),
+        makeFunnelEntry({ lessonId: 2, studentCount: 59 }), // 59% < 60% → anomaly
+      ];
+      const anomalies = detectDropoffAnomalies(funnel);
+      expect(anomalies).toHaveLength(1);
+      expect(anomalies[0].lessonId).toBe(2);
+      expect(anomalies[0].continuationRate).toBeCloseTo(0.59);
+    });
+
+    it("does not flag the first lesson", () => {
+      // Even if the first lesson has 0 students, it should never be flagged
+      const funnel = [
+        makeFunnelEntry({ lessonId: 1, studentCount: 0 }),
+        makeFunnelEntry({ lessonId: 2, studentCount: 0 }),
+      ];
+      // Both have 0 students; prior lesson is 0 so we skip (divide-by-zero guard)
+      expect(detectDropoffAnomalies(funnel)).toEqual([]);
+    });
+
+    it("skips comparison when prior lesson had no students", () => {
+      const funnel = [
+        makeFunnelEntry({ lessonId: 1, studentCount: 0 }),
+        makeFunnelEntry({ lessonId: 2, studentCount: 10 }),
+      ];
+      expect(detectDropoffAnomalies(funnel)).toEqual([]);
+    });
+
+    it("can flag multiple anomalous lessons", () => {
+      const funnel = [
+        makeFunnelEntry({ lessonId: 1, studentCount: 100 }),
+        makeFunnelEntry({ lessonId: 2, studentCount: 50 }), // 50% → anomaly
+        makeFunnelEntry({ lessonId: 3, studentCount: 25 }), // 50% → anomaly
+      ];
+      const anomalies = detectDropoffAnomalies(funnel);
+      expect(anomalies).toHaveLength(2);
+      expect(anomalies[0].lessonId).toBe(2);
+      expect(anomalies[1].lessonId).toBe(3);
+    });
+  });
+
+  describe("detectQuizAnomalies", () => {
+    it("returns empty array when all quizzes are above the threshold", () => {
+      const metrics = [
+        makeQuizMetrics({ quizId: 1, bestAttemptPassRate: 0.5 }), // exactly 50% — no anomaly
+        makeQuizMetrics({ quizId: 2, bestAttemptPassRate: 0.8 }),
+      ];
+      expect(detectQuizAnomalies(metrics)).toEqual([]);
+    });
+
+    it("flags a quiz with best-attempt pass rate below 50%", () => {
+      const metrics = [
+        makeQuizMetrics({ quizId: 1, bestAttemptPassRate: 0.49 }),
+      ];
+      const anomalies = detectQuizAnomalies(metrics);
+      expect(anomalies).toHaveLength(1);
+      expect(anomalies[0].quizId).toBe(1);
+      expect(anomalies[0].bestAttemptPassRate).toBeCloseTo(0.49);
+    });
+
+    it("returns empty array when there are no quizzes", () => {
+      expect(detectQuizAnomalies([])).toEqual([]);
+    });
+
+    it("can flag multiple quizzes", () => {
+      const metrics = [
+        makeQuizMetrics({ quizId: 1, bestAttemptPassRate: 0.2 }),
+        makeQuizMetrics({ quizId: 2, bestAttemptPassRate: 0.9 }),
+        makeQuizMetrics({ quizId: 3, bestAttemptPassRate: 0.3 }),
+      ];
+      const anomalies = detectQuizAnomalies(metrics);
+      expect(anomalies).toHaveLength(2);
+      expect(anomalies.map((a) => a.quizId)).toEqual([1, 3]);
+    });
+  });
+
+  describe("detectCompletionAnomaly", () => {
+    it("returns null when completion rate is exactly 30%", () => {
+      expect(detectCompletionAnomaly(0.3)).toBeNull();
+    });
+
+    it("returns null when completion rate is above 30%", () => {
+      expect(detectCompletionAnomaly(0.8)).toBeNull();
+    });
+
+    it("returns an anomaly when completion rate is below 30%", () => {
+      const anomaly = detectCompletionAnomaly(0.29);
+      expect(anomaly).not.toBeNull();
+      expect(anomaly?.type).toBe("completion");
+      expect(anomaly?.completionRate).toBeCloseTo(0.29);
+    });
+
+    it("returns an anomaly when completion rate is 0%", () => {
+      const anomaly = detectCompletionAnomaly(0);
+      expect(anomaly).not.toBeNull();
     });
   });
 });

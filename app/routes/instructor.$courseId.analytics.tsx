@@ -12,7 +12,13 @@ import {
   getCourseQuizMetrics,
   getLessonDropoffFunnel,
   getCourseVideoDropoff,
+  detectDropoffAnomalies,
+  detectQuizAnomalies,
+  detectCompletionAnomaly,
   type Period,
+  type DropoffAnomaly,
+  type QuizAnomaly,
+  type CompletionAnomaly,
 } from "~/services/analyticsService";
 import { data, isRouteErrorResponse } from "react-router";
 import { UserRole } from "~/db/schema";
@@ -102,6 +108,10 @@ export async function loader({ params, request }: Route.LoaderArgs) {
   const lessonFunnel = getLessonDropoffFunnel(courseId);
   const videoDropoff = getCourseVideoDropoff(courseId);
 
+  const dropoffAnomalies = detectDropoffAnomalies(lessonFunnel);
+  const quizAnomalies = detectQuizAnomalies(quizMetrics);
+  const completionAnomaly = detectCompletionAnomaly(completionRate);
+
   return {
     course,
     period,
@@ -112,6 +122,9 @@ export async function loader({ params, request }: Route.LoaderArgs) {
     quizMetrics,
     lessonFunnel,
     videoDropoff,
+    dropoffAnomalies,
+    quizAnomalies,
+    completionAnomaly,
   };
 }
 
@@ -134,6 +147,9 @@ export default function CourseAnalytics({ loaderData }: Route.ComponentProps) {
     quizMetrics,
     lessonFunnel,
     videoDropoff,
+    dropoffAnomalies,
+    quizAnomalies,
+    completionAnomaly,
   } = loaderData;
   const navigate = useNavigate();
 
@@ -228,6 +244,19 @@ export default function CourseAnalytics({ loaderData }: Route.ComponentProps) {
         </Card>
       </div>
 
+      {/* Completion anomaly callout */}
+      {completionAnomaly && (
+        <div className="mb-8 flex items-start gap-3 rounded-lg border border-amber-200 bg-amber-50 p-4 text-amber-900 dark:border-amber-800 dark:bg-amber-950 dark:text-amber-200">
+          <AlertTriangle className="mt-0.5 size-5 shrink-0" />
+          <div>
+            <p className="font-medium">Low completion rate</p>
+            <p className="text-sm">
+              Only {formatPercent(completionAnomaly.completionRate)} of enrolled students have completed this course. Consider reviewing the course structure or adding more engaging content.
+            </p>
+          </div>
+        </div>
+      )}
+
       {/* Enrollment trend chart */}
       <Card className="mb-8">
         <CardHeader>
@@ -253,6 +282,21 @@ export default function CourseAnalytics({ loaderData }: Route.ComponentProps) {
             <CardTitle>Quiz Performance</CardTitle>
           </CardHeader>
           <CardContent>
+            {quizAnomalies.length > 0 && (
+              <div className="mb-4 space-y-2">
+                {quizAnomalies.map((a) => (
+                  <div
+                    key={a.quizId}
+                    className="flex items-start gap-3 rounded-lg border border-amber-200 bg-amber-50 p-3 text-amber-900 dark:border-amber-800 dark:bg-amber-950 dark:text-amber-200"
+                  >
+                    <AlertTriangle className="mt-0.5 size-4 shrink-0" />
+                    <p className="text-sm">
+                      <span className="font-medium">{a.quizTitle}</span> has a low best-attempt pass rate of {formatPercent(a.bestAttemptPassRate)}. Review the quiz questions or prerequisite lesson content.
+                    </p>
+                  </div>
+                ))}
+              </div>
+            )}
             <Suspense fallback={<div className="h-[300px]" />}>
               <QuizPassRateChart data={quizMetrics} />
             </Suspense>
@@ -293,6 +337,21 @@ export default function CourseAnalytics({ loaderData }: Route.ComponentProps) {
             <CardTitle>Lesson Completion Funnel</CardTitle>
           </CardHeader>
           <CardContent>
+            {dropoffAnomalies.length > 0 && (
+              <div className="mb-4 space-y-2">
+                {dropoffAnomalies.map((a) => (
+                  <div
+                    key={a.lessonId}
+                    className="flex items-start gap-3 rounded-lg border border-amber-200 bg-amber-50 p-3 text-amber-900 dark:border-amber-800 dark:bg-amber-950 dark:text-amber-200"
+                  >
+                    <AlertTriangle className="mt-0.5 size-4 shrink-0" />
+                    <p className="text-sm">
+                      <span className="font-medium">{a.lessonTitle}</span> has a high drop-off — only {formatPercent(a.continuationRate)} of students from the previous lesson continued here.
+                    </p>
+                  </div>
+                ))}
+              </div>
+            )}
             <Suspense fallback={<div className="h-[300px]" />}>
               <LessonFunnelChart data={lessonFunnel} />
             </Suspense>
