@@ -2,18 +2,8 @@
 
 This file provides guidance to Claude Code (claude.ai/code) when working with code in this repository.
 
+## Detailed Guidance
 
-## Writing Functions
-
-When you have a function with more than one parameter with the same type, use an object parameter instead of positional parameters:
-
-```
-// BAD
-const addUserToPost = (userId: string, postId: string) => {};`
-
-// GOOD
-const addUserToPost = (opts: { userId: string; postId: string }) => {};
-```
-
-## Creating new services
-Any new services (by name of the file, for `example purposeService.ts`, or location in `/app/services`) should have tests written for them in an accompanying `.tests.ts` file.
+- **Commands**: See [agent_docs/commands.md](agent_docs/commands.md)
+- **Architecture & tech stack**: See [agent_docs/architecture.md](agent_docs/architecture.md)
+- **Code conventions**: See [agent_docs/code_conventions.md](agent_docs/code_conventions.md)
