@@ -1,6 +1,7 @@
 import { eq, and, gte, sql, isNotNull } from "drizzle-orm";
 import { db } from "~/db";
 import {
+  users,
   courses,
   enrollments,
   purchases,
@@ -366,6 +367,225 @@ export function detectCompletionAnomaly(completionRate: number): CompletionAnoma
     return { type: "completion", completionRate };
   }
   return null;
+}
+
+// ─── CSV export queries ───
+
+export interface EnrollmentExportRow {
+  studentName: string;
+  email: string;
+  enrolledAt: string;
+  enrollmentType: "paid" | "free";
+  completionStatus: "completed" | "in progress";
+}
+
+export function getEnrollmentExportRows(
+  courseId: number,
+  period: Period = "all"
+): EnrollmentExportRow[] {
+  const startDate = periodToStartDate(period);
+  const condition =
+    startDate !== null
+      ? and(eq(enrollments.courseId, courseId), gte(enrollments.enrolledAt, startDate))
+      : eq(enrollments.courseId, courseId);
+
+  const rows = db
+    .select({
+      studentName: users.name,
+      email: users.email,
+      enrolledAt: enrollments.enrolledAt,
+      completedAt: enrollments.completedAt,
+      pricePaid: purchases.pricePaid,
+    })
+    .from(enrollments)
+    .innerJoin(users, eq(users.id, enrollments.userId))
+    .leftJoin(
+      purchases,
+      and(eq(purchases.userId, enrollments.userId), eq(purchases.courseId, enrollments.courseId))
+    )
+    .where(condition)
+    .all();
+
+  return rows.map((r) => ({
+    studentName: r.studentName,
+    email: r.email,
+    enrolledAt: r.enrolledAt,
+    enrollmentType: r.pricePaid != null ? "paid" : "free",
+    completionStatus: r.completedAt ? "completed" : "in progress",
+  }));
+}
+
+export interface RevenueExportRow {
+  purchaseDate: string;
+  studentName: string;
+  courseTitle: string;
+  amountPaid: number; // in cents
+}
+
+export function getRevenueExportRows(
+  courseId: number,
+  period: Period = "all"
+): RevenueExportRow[] {
+  const startDate = periodToStartDate(period);
+  const condition =
+    startDate !== null
+      ? and(eq(purchases.courseId, courseId), gte(purchases.createdAt, startDate))
+      : eq(purchases.courseId, courseId);
+
+  const rows = db
+    .select({
+      purchaseDate: purchases.createdAt,
+      studentName: users.name,
+      courseTitle: courses.title,
+      amountPaid: purchases.pricePaid,
+    })
+    .from(purchases)
+    .innerJoin(users, eq(users.id, purchases.userId))
+    .innerJoin(courses, eq(courses.id, purchases.courseId))
+    .where(condition)
+    .all();
+
+  return rows.map((r) => ({
+    purchaseDate: r.purchaseDate,
+    studentName: r.studentName,
+    courseTitle: r.courseTitle,
+    amountPaid: r.amountPaid,
+  }));
+}
+
+export interface QuizResultsExportRow {
+  studentName: string;
+  quizTitle: string;
+  bestScore: number;
+  bestAttemptPassed: boolean;
+  latestScore: number;
+  latestAttemptPassed: boolean;
+}
+
+export function getQuizResultsExportRows(courseId: number): QuizResultsExportRow[] {
+  const quizList = db
+    .select({ quizId: quizzes.id, quizTitle: quizzes.title })
+    .from(quizzes)
+    .innerJoin(lessons, eq(lessons.id, quizzes.lessonId))
+    .innerJoin(modules, eq(modules.id, lessons.moduleId))
+    .where(eq(modules.courseId, courseId))
+    .all();
+
+  if (quizList.length === 0) return [];
+
+  const results: QuizResultsExportRow[] = [];
+
+  for (const { quizId, quizTitle } of quizList) {
+    const attempts = db
+      .select({
+        userId: quizAttempts.userId,
+        studentName: users.name,
+        score: quizAttempts.score,
+        attemptedAt: quizAttempts.attemptedAt,
+      })
+      .from(quizAttempts)
+      .innerJoin(users, eq(users.id, quizAttempts.userId))
+      .where(eq(quizAttempts.quizId, quizId))
+      .all();
+
+    // Group by user to find best and latest attempt
+    const byUser = new Map<
+      number,
+      { studentName: string; bestScore: number; latestScore: number; latestAt: string }
+    >();
+
+    for (const a of attempts) {
+      const existing = byUser.get(a.userId);
+      if (!existing) {
+        byUser.set(a.userId, {
+          studentName: a.studentName,
+          bestScore: a.score,
+          latestScore: a.score,
+          latestAt: a.attemptedAt,
+        });
+      } else {
+        if (a.score > existing.bestScore) existing.bestScore = a.score;
+        if (a.attemptedAt > existing.latestAt) {
+          existing.latestScore = a.score;
+          existing.latestAt = a.attemptedAt;
+        }
+      }
+    }
+
+    const PASS_THRESHOLD = 0.7;
+    for (const { studentName, bestScore, latestScore } of byUser.values()) {
+      results.push({
+        studentName,
+        quizTitle,
+        bestScore,
+        bestAttemptPassed: bestScore >= PASS_THRESHOLD,
+        latestScore,
+        latestAttemptPassed: latestScore >= PASS_THRESHOLD,
+      });
+    }
+  }
+
+  return results;
+}
+
+// ─── CSV serialisation ───
+// Pure functions — no database access. Convert query result rows to CSV strings.
+
+function escapeCell(value: string): string {
+  // If value contains commas, quotes, or newlines, wrap in quotes and escape internal quotes
+  if (value.includes('"') || value.includes(",") || value.includes("\n")) {
+    return `"${value.replace(/"/g, '""')}"`;
+  }
+  return value;
+}
+
+function rowsToCsv(headers: string[], rows: string[][]): string {
+  const headerLine = headers.map(escapeCell).join(",");
+  const dataLines = rows.map((row) => row.map(escapeCell).join(","));
+  return [headerLine, ...dataLines].join("\n");
+}
+
+export function enrollmentsToCsv(rows: EnrollmentExportRow[]): string {
+  const headers = ["Student Name", "Email", "Enrolled At", "Type", "Completion Status"];
+  const data = rows.map((r) => [
+    r.studentName,
+    r.email,
+    r.enrolledAt,
+    r.enrollmentType,
+    r.completionStatus,
+  ]);
+  return rowsToCsv(headers, data);
+}
+
+export function revenueToCsv(rows: RevenueExportRow[]): string {
+  const headers = ["Purchase Date", "Student Name", "Course Title", "Amount Paid"];
+  const data = rows.map((r) => [
+    r.purchaseDate,
+    r.studentName,
+    r.courseTitle,
+    (r.amountPaid / 100).toFixed(2),
+  ]);
+  return rowsToCsv(headers, data);
+}
+
+export function quizResultsToCsv(rows: QuizResultsExportRow[]): string {
+  const headers = [
+    "Student Name",
+    "Quiz Title",
+    "Best Score",
+    "Best Attempt Passed",
+    "Latest Score",
+    "Latest Attempt Passed",
+  ];
+  const data = rows.map((r) => [
+    r.studentName,
+    r.quizTitle,
+    r.bestScore.toFixed(2),
+    r.bestAttemptPassed ? "yes" : "no",
+    r.latestScore.toFixed(2),
+    r.latestAttemptPassed ? "yes" : "no",
+  ]);
+  return rowsToCsv(headers, data);
 }
 
 export function getCourseSummaries(instructorId: number | null) {

@@ -25,8 +25,14 @@ import {
   detectDropoffAnomalies,
   detectQuizAnomalies,
   detectCompletionAnomaly,
+  enrollmentsToCsv,
+  revenueToCsv,
+  quizResultsToCsv,
   type LessonFunnelEntry,
   type QuizMetrics,
+  type EnrollmentExportRow,
+  type RevenueExportRow,
+  type QuizResultsExportRow,
 } from "./analyticsService";
 
 describe("analyticsService", () => {
@@ -820,6 +826,138 @@ describe("analyticsService", () => {
     it("returns an anomaly when completion rate is 0%", () => {
       const anomaly = detectCompletionAnomaly(0);
       expect(anomaly).not.toBeNull();
+    });
+  });
+
+  // ─── Phase 5: CSV serialisation ───
+
+  describe("enrollmentsToCsv", () => {
+    it("produces correct headers for an empty result set", () => {
+      const csv = enrollmentsToCsv([]);
+      expect(csv).toBe("Student Name,Email,Enrolled At,Type,Completion Status");
+    });
+
+    it("produces one data row per enrollment", () => {
+      const rows: EnrollmentExportRow[] = [
+        {
+          studentName: "Alice",
+          email: "alice@example.com",
+          enrolledAt: "2024-01-01T00:00:00.000Z",
+          enrollmentType: "paid",
+          completionStatus: "completed",
+        },
+        {
+          studentName: "Bob",
+          email: "bob@example.com",
+          enrolledAt: "2024-02-01T00:00:00.000Z",
+          enrollmentType: "free",
+          completionStatus: "in progress",
+        },
+      ];
+      const lines = enrollmentsToCsv(rows).split("\n");
+      expect(lines).toHaveLength(3); // header + 2 rows
+      expect(lines[1]).toBe("Alice,alice@example.com,2024-01-01T00:00:00.000Z,paid,completed");
+      expect(lines[2]).toBe("Bob,bob@example.com,2024-02-01T00:00:00.000Z,free,in progress");
+    });
+
+    it("escapes commas in student names", () => {
+      const rows: EnrollmentExportRow[] = [
+        {
+          studentName: "Smith, John",
+          email: "john@example.com",
+          enrolledAt: "2024-01-01T00:00:00.000Z",
+          enrollmentType: "paid",
+          completionStatus: "completed",
+        },
+      ];
+      const csv = enrollmentsToCsv(rows);
+      expect(csv).toContain('"Smith, John"');
+    });
+
+    it("escapes double quotes in values", () => {
+      const rows: EnrollmentExportRow[] = [
+        {
+          studentName: 'Say "Hello"',
+          email: "hello@example.com",
+          enrolledAt: "2024-01-01T00:00:00.000Z",
+          enrollmentType: "free",
+          completionStatus: "in progress",
+        },
+      ];
+      const csv = enrollmentsToCsv(rows);
+      expect(csv).toContain('"Say ""Hello"""');
+    });
+  });
+
+  describe("revenueToCsv", () => {
+    it("produces correct headers for an empty result set", () => {
+      const csv = revenueToCsv([]);
+      expect(csv).toBe("Purchase Date,Student Name,Course Title,Amount Paid");
+    });
+
+    it("converts amount from cents to dollars with 2 decimal places", () => {
+      const rows: RevenueExportRow[] = [
+        {
+          purchaseDate: "2024-03-01T00:00:00.000Z",
+          studentName: "Alice",
+          courseTitle: "TypeScript Fundamentals",
+          amountPaid: 4999,
+        },
+      ];
+      const lines = revenueToCsv(rows).split("\n");
+      expect(lines[1]).toContain("49.99");
+    });
+
+    it("escapes commas in course titles", () => {
+      const rows: RevenueExportRow[] = [
+        {
+          purchaseDate: "2024-03-01T00:00:00.000Z",
+          studentName: "Alice",
+          courseTitle: "Intro, Advanced, and Expert",
+          amountPaid: 1000,
+        },
+      ];
+      const csv = revenueToCsv(rows);
+      expect(csv).toContain('"Intro, Advanced, and Expert"');
+    });
+  });
+
+  describe("quizResultsToCsv", () => {
+    it("produces correct headers for an empty result set", () => {
+      const csv = quizResultsToCsv([]);
+      expect(csv).toBe(
+        "Student Name,Quiz Title,Best Score,Best Attempt Passed,Latest Score,Latest Attempt Passed"
+      );
+    });
+
+    it("writes yes/no for pass fields", () => {
+      const rows: QuizResultsExportRow[] = [
+        {
+          studentName: "Alice",
+          quizTitle: "Module 1 Quiz",
+          bestScore: 0.8,
+          bestAttemptPassed: true,
+          latestScore: 0.6,
+          latestAttemptPassed: false,
+        },
+      ];
+      const lines = quizResultsToCsv(rows).split("\n");
+      expect(lines[1]).toBe("Alice,Module 1 Quiz,0.80,yes,0.60,no");
+    });
+
+    it("escapes commas in quiz titles", () => {
+      const rows: QuizResultsExportRow[] = [
+        {
+          studentName: "Bob",
+          quizTitle: "React, Redux, and Context",
+          bestScore: 1.0,
+          bestAttemptPassed: true,
+          latestScore: 1.0,
+          latestAttemptPassed: true,
+        },
+      ];
+      const csv = quizResultsToCsv(rows);
+      expect(csv).toContain('"React, Redux, and Context"');
     });
   });
 });

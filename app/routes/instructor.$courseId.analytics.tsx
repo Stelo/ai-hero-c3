@@ -23,7 +23,7 @@ import {
 import { data, isRouteErrorResponse } from "react-router";
 import { UserRole } from "~/db/schema";
 import { Card, CardContent, CardHeader, CardTitle } from "~/components/ui/card";
-import { AlertTriangle } from "lucide-react";
+import { AlertTriangle, FileDown } from "lucide-react";
 
 const EnrollmentTrendChart = lazy(() =>
   import("~/components/enrollment-trend-chart").then((m) => ({
@@ -174,21 +174,48 @@ export default function CourseAnalytics({ loaderData }: Route.ComponentProps) {
       <div className="mb-6 flex flex-wrap items-center justify-between gap-4">
         <h1 className="text-3xl font-bold">{course.title}</h1>
 
-        {/* Period filter */}
-        <div className="flex items-center gap-1 rounded-lg border p-1">
-          {PERIODS.map(({ value, label }) => (
-            <button
-              key={value}
-              onClick={() => handlePeriodChange(value)}
-              className={`rounded px-3 py-1.5 text-sm transition-colors ${
-                period === value
-                  ? "bg-primary text-primary-foreground"
-                  : "text-muted-foreground hover:text-foreground"
-              }`}
+        <div className="flex flex-wrap items-center gap-3">
+          {/* CSV exports */}
+          <div className="flex items-center gap-2">
+            <a
+              href={`/instructor/${course.id}/analytics/export?type=enrollments&period=${period}`}
+              className="inline-flex items-center gap-1.5 rounded-md border px-3 py-1.5 text-sm font-medium text-muted-foreground transition-colors hover:bg-muted hover:text-foreground"
             >
-              {label}
-            </button>
-          ))}
+              <FileDown className="size-4" />
+              Enrollments
+            </a>
+            <a
+              href={`/instructor/${course.id}/analytics/export?type=revenue&period=${period}`}
+              className="inline-flex items-center gap-1.5 rounded-md border px-3 py-1.5 text-sm font-medium text-muted-foreground transition-colors hover:bg-muted hover:text-foreground"
+            >
+              <FileDown className="size-4" />
+              Revenue
+            </a>
+            <a
+              href={`/instructor/${course.id}/analytics/export?type=quiz-results`}
+              className="inline-flex items-center gap-1.5 rounded-md border px-3 py-1.5 text-sm font-medium text-muted-foreground transition-colors hover:bg-muted hover:text-foreground"
+            >
+              <FileDown className="size-4" />
+              Quiz Results
+            </a>
+          </div>
+
+          {/* Period filter */}
+          <div className="flex items-center gap-1 rounded-lg border p-1">
+            {PERIODS.map(({ value, label }) => (
+              <button
+                key={value}
+                onClick={() => handlePeriodChange(value)}
+                className={`rounded px-3 py-1.5 text-sm transition-colors ${
+                  period === value
+                    ? "bg-primary text-primary-foreground"
+                    : "text-muted-foreground hover:text-foreground"
+                }`}
+              >
+                {label}
+              </button>
+            ))}
+          </div>
         </div>
       </div>
 

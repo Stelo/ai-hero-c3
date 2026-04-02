@@ -27,6 +27,10 @@ export default [
       "routes/instructor.$courseId.analytics.tsx"
     ),
     route(
+      "instructor/:courseId/analytics/export",
+      "routes/instructor.$courseId.analytics.export.tsx"
+    ),
+    route(
       "instructor/:courseId/lessons/:lessonId",
       "routes/instructor.$courseId.lessons.$lessonId.tsx"
     ),
