@@ -17,20 +17,21 @@ Read any referenced PRD if provided, otherwise invoke the `write-a-prd` skill to
 
 Read any referenced Plan if provided, otherwise invoke the `prd-to-plan` skill to break the PRD into phased vertical slices and store in `./plans/`.
 
+Once the plan is ready, show a summary to the user and ask: **"Shall I pause for confirmation after each phase, or implement all phases and commit at the end?"**
+
 ### 3. Implement phase by phase, validating as you go
 
 For each phase in the plan:
 
 1. Announce which phase you are starting
-2. Implement the vertical slice end-to-end
-3. Run feedback loops after each phase:
-   - `pnpm run type-check` — fix all type errors before continuing
-   - `pnpm run test` — fix all test failures before continuing
-   - Address any other relevant checks (lint, build) if they exist
-4. Confirm acceptance criteria are met and automated tests have been created to validate this
-5. Ask the user: **"Phase N complete. Anything to change before I move on?"** — incorporate feedback, then proceed
+2. Implement the vertical slice end-to-end:
+   - **Backend code**: use red/green/refactor one behaviour at a time in tracer-bullet style — write a single failing test, make it pass with minimal code, refactor, then repeat for the next behaviour
+   - **Frontend code**: implement normally
+3. Run `pnpm run type-check` and `pnpm run test` — fix all failures before continuing
+4. Confirm acceptance criteria are met and tests cover the new behaviour
+5. If the user chose step-by-step confirmation: ask **"Phase N complete. Anything to change before I move on?"** and incorporate feedback before proceeding. Otherwise, continue to the next phase automatically.
 
-> Do not start the next phase until the current phase passes all checks and the user has approved.
+> Do not start the next phase until the current phase passes all checks (and, if confirming step-by-step, the user has approved).
 
 ### 4. Prepare and confirm commit
 
@@ -38,7 +39,7 @@ For each phase in the plan:
    - `pnpm run typecheck` — fix all type errors before continuing
    - `pnpm run test` — fix all test failures before continuing
    - Address any other relevant checks (lint, build) if they exist
-2. Stage relevant files and draft a commit message that summarises *what* changed and *why* in one or two concise sentences
+2. Stage relevant files and draft a commit message that summarises _what_ changed and _why_ in one or two concise sentences
 3. Present the staged diff and message to the user:
    > "Here is the proposed commit:
    >
