@@ -1,3 +1,8 @@
+---
+name: write-a-prd
+description: Grill the user to create a requirements document for a new feature, saved as a local Markdown file in ./plans/. Use when user wants to add a new feature to  define the scope and requirements of the feature.
+---
+
 This skill will be invoked when the user wants to create a PRD. You should go through the steps below. You may skip steps if you don't consider them necessary.
 
 1. Ask the user for a long, detailed description of the problem they want to solve and any potential ideas for solutions.
