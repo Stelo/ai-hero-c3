@@ -27,7 +27,7 @@ For each phase in the plan:
 2. Implement the vertical slice end-to-end:
    - **Backend code**: use red/green/refactor one behaviour at a time in tracer-bullet style — write a single failing test, make it pass with minimal code, refactor, then repeat for the next behaviour
    - **Frontend code**: implement normally
-3. Run `pnpm run type-check` and `pnpm run test` — fix all failures before continuing
+3. Run `pnpm run typecheck` and `pnpm run test` — fix all failures before continuing
 4. Confirm acceptance criteria are met and tests cover the new behaviour
 5. If the user chose step-by-step confirmation: ask **"Phase N complete. Anything to change before I move on?"** and incorporate feedback before proceeding. Otherwise, continue to the next phase automatically.
 

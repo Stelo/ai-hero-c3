@@ -44,17 +44,21 @@ Admins can access the same views for any course on the platform. Anomalies (high
 ## Implementation Decisions
 
 ### New Routes
+
 - `GET /instructor/analytics` — cross-course overview for the logged-in instructor (or all courses for admins).
 - `GET /instructor/:courseId/analytics` — per-course analytics detail page.
 - `GET /instructor/analytics/export` — CSV export endpoint (course, type, and date-range passed as query params).
 - `GET /instructor/:courseId/analytics/export` — per-course CSV export.
 
 ### Access Control
+
 - Reuse the existing role check pattern: instructors see only their own courses; admins see everything.
 - Enforce at the loader level, same pattern as the existing `/instructor/:courseId` route guard.
 
 ### Data Queries
+
 All analytics are computed at query time from existing tables — no new tracking tables are needed. Key query patterns:
+
 - **Revenue**: `SUM(pricePaid)` from `purchases` joined to `courses` filtered by `instructorId` and optional `createdAt` date range.
 - **Enrollment split**: Count `enrollments` joined to `purchases` — rows with a matching purchase = paid; rows without = free/coupon.
 - **Completion rate**: `COUNT(enrollments WHERE completedAt IS NOT NULL) / COUNT(enrollments)` per course.
@@ -67,11 +71,13 @@ All analytics are computed at query time from existing tables — no new trackin
   - Course completion anomaly: completion rate below 30%.
 
 ### Time Filtering
+
 - Implemented as URL search params (`?period=30d`, `7d`, `90d`, `1y`, `all`).
 - Applied to `purchases.createdAt` (revenue), `enrollments.enrolledAt` (enrollment trend), and `quizAttempts.attemptedAt` (quiz trend).
 - Lesson drop-off and video drop-off are all-time only (no `createdAt` on `lessonProgress`).
 
 ### Charts (Recharts)
+
 - Add `recharts` as a new dependency.
 - Chart components are client-side only (wrapped in `ClientOnly` or lazy-loaded) to avoid SSR issues.
 - Charts used:
@@ -80,18 +86,22 @@ All analytics are computed at query time from existing tables — no new trackin
   - **Area chart**: video drop-off curve per lesson (x = video position, y = % of students still watching).
 
 ### CSV Export
+
 - Implemented as a loader that returns a `Response` with `Content-Type: text/csv` and `Content-Disposition: attachment`.
 - Three export types: `enrollments`, `revenue`, `quiz-results`.
 - Date range params respected where applicable.
 
 ### Schema Changes
+
 No schema changes are required. All analytics are derived from existing tables.
 
 ### Navigation
+
 - Add an "Analytics" link to the existing instructor sidebar/nav alongside the existing course tabs.
 - Add an "Analytics" link to the top-level `/instructor` dashboard alongside the existing course list.
 
 ### Anomaly Callout UI
+
 - Rendered as highlighted cards or inline warning banners (using existing Tailwind styling conventions).
 - Displayed at the top of the relevant section (e.g. drop-off anomalies above the lesson funnel chart).
 
