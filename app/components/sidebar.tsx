@@ -133,7 +133,7 @@ export function Sidebar({
         <NavLink to="/" className="text-lg font-bold tracking-tight">
           Cadence
         </NavLink>
-        {currentUserRole === UserRole.Instructor && (
+        {(currentUserRole === UserRole.Instructor || isTeamAdmin) && (
           <NotificationBell
             notifications={notifications}
             unreadCount={unreadCount}

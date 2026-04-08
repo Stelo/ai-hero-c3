@@ -1,6 +1,7 @@
 import { describe, it, expect, beforeEach, vi } from "vitest";
 import { createTestDb, seedBaseData } from "~/test/setup";
 import * as schema from "~/db/schema";
+import { eq } from "drizzle-orm";
 
 let testDb: ReturnType<typeof createTestDb>;
 let base: ReturnType<typeof seedBaseData>;
@@ -273,6 +274,113 @@ describe("couponService", () => {
       const result = redeemCoupon(coupon.code, redeemer.id, "PL");
 
       expect(result.ok).toBe(true);
+    });
+
+    it("creates a notification for the team admin on successful redemption", () => {
+      const { team, purchase } = setupTeamAndPurchase();
+      const [coupon] = generateCoupons(team.id, base.course.id, purchase.id, 3);
+      const redeemer = createRedeemer();
+
+      redeemCoupon(coupon.code, redeemer.id, "US");
+
+      const adminNotifications = testDb
+        .select()
+        .from(schema.notifications)
+        .where(eq(schema.notifications.recipientUserId, base.user.id))
+        .all();
+
+      expect(adminNotifications).toHaveLength(1);
+      expect(adminNotifications[0].type).toBe(
+        schema.NotificationType.CouponRedemption
+      );
+      expect(adminNotifications[0].title).toBe("Seat Claimed");
+      expect(adminNotifications[0].linkUrl).toBe("/team");
+    });
+
+    it("notification message includes redeemer name, course title, and seat counts", () => {
+      const { team, purchase } = setupTeamAndPurchase();
+      // 3 coupons total, redeem 1 → 2 remaining
+      const [coupon] = generateCoupons(team.id, base.course.id, purchase.id, 3);
+      const redeemer = createRedeemer();
+
+      redeemCoupon(coupon.code, redeemer.id, "US");
+
+      const [notification] = testDb
+        .select()
+        .from(schema.notifications)
+        .where(eq(schema.notifications.recipientUserId, base.user.id))
+        .all();
+
+      expect(notification.message).toContain("Redeemer");
+      expect(notification.message).toContain("Test Course");
+      expect(notification.message).toContain("2 of 3 seats remaining");
+    });
+
+    it("seat counts are per-course for that team", () => {
+      const { team, purchase } = setupTeamAndPurchase();
+      // 2 coupons for the course; redeem 1 → 1 remaining
+      const [coupon] = generateCoupons(team.id, base.course.id, purchase.id, 2);
+      const redeemer = createRedeemer();
+
+      redeemCoupon(coupon.code, redeemer.id, "US");
+
+      const [notification] = testDb
+        .select()
+        .from(schema.notifications)
+        .where(eq(schema.notifications.recipientUserId, base.user.id))
+        .all();
+
+      expect(notification.message).toContain("1 of 2 seats remaining");
+    });
+
+    it("notifies all admins when a team has multiple admins", () => {
+      const { team, purchase } = setupTeamAndPurchase();
+      // Add a second admin
+      const secondAdmin = testDb
+        .insert(schema.users)
+        .values({
+          name: "Second Admin",
+          email: "second-admin@example.com",
+          role: schema.UserRole.Student,
+        })
+        .returning()
+        .get();
+      testDb
+        .insert(schema.teamMembers)
+        .values({
+          teamId: team.id,
+          userId: secondAdmin.id,
+          role: schema.TeamMemberRole.Admin,
+        })
+        .run();
+
+      const [coupon] = generateCoupons(team.id, base.course.id, purchase.id, 1);
+      const redeemer = createRedeemer();
+
+      redeemCoupon(coupon.code, redeemer.id, "US");
+
+      const firstAdminNotifications = testDb
+        .select()
+        .from(schema.notifications)
+        .where(eq(schema.notifications.recipientUserId, base.user.id))
+        .all();
+      const secondAdminNotifications = testDb
+        .select()
+        .from(schema.notifications)
+        .where(eq(schema.notifications.recipientUserId, secondAdmin.id))
+        .all();
+
+      expect(firstAdminNotifications).toHaveLength(1);
+      expect(secondAdminNotifications).toHaveLength(1);
+    });
+
+    it("does not create notifications on failed redemption", () => {
+      // Attempt to redeem a nonexistent coupon
+      redeemCoupon("bad-code", 999, "US");
+
+      const allNotifications = testDb.select().from(schema.notifications).all();
+
+      expect(allNotifications).toHaveLength(0);
     });
   });
 });
