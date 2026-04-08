@@ -35,7 +35,7 @@ For each phase in the plan:
 ### 4. Prepare and confirm commit
 
 1. After all phases are complete, run the full suite one more time:
-   - `pnpm run type-check` — fix all type errors before continuing
+   - `pnpm run typecheck` — fix all type errors before continuing
    - `pnpm run test` — fix all test failures before continuing
    - Address any other relevant checks (lint, build) if they exist
 2. Stage relevant files and draft a commit message that summarises *what* changed and *why* in one or two concise sentences
