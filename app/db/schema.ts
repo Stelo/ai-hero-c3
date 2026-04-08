@@ -28,6 +28,10 @@ export enum TeamMemberRole {
   Member = "member",
 }
 
+export enum NotificationType {
+  Enrollment = "enrollment",
+}
+
 // ─── Tables ───
 
 export const users = sqliteTable("users", {
@@ -294,6 +298,21 @@ export const courseRatings = sqliteTable(
   },
   (t) => [unique().on(t.userId, t.courseId)]
 );
+
+export const notifications = sqliteTable("notifications", {
+  id: integer("id").primaryKey({ autoIncrement: true }),
+  recipientUserId: integer("recipient_user_id")
+    .notNull()
+    .references(() => users.id),
+  type: text("type").notNull().$type<NotificationType>(),
+  title: text("title").notNull(),
+  message: text("message").notNull(),
+  linkUrl: text("link_url").notNull(),
+  isRead: integer("is_read", { mode: "boolean" }).notNull().default(false),
+  createdAt: text("created_at")
+    .notNull()
+    .$defaultFn(() => new Date().toISOString()),
+});
 
 export const lessonBookmarks = sqliteTable(
   "lesson_bookmarks",
